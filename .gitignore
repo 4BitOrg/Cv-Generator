@@ -1,0 +1,6 @@
+# Created by venv; see https://docs.python.org/3/library/venv.html
+# This file is in the same directory as pyvenv.cfg
+# and the Scripts (Windows) or bin (Unix) directory.
+# If you want to ignore the whole venv directory, you should
+# ignore the directory itself, not just this file.
+DBapi_key.env
