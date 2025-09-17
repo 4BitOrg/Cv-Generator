@@ -109,14 +109,6 @@ def save_cv_as_docx(cv_text, filename="cv.docx"):
 # ----------------------------
 # Supabase helper functions
 # ----------------------------
-def supabase_insert(table: str, row: dict):
-    """Insert row into Supabase table."""
-    url = f"{SUPABASE_REST}/{table}"
-    resp = requests.post(url, headers=ADMIN_HEADERS, data=json.dumps(row))
-    if not resp.ok:
-        raise HTTPException(status_code=500, detail=f"Supabase insert error: {resp.text}")
-    return resp.json()
-
 def supabase_select(table: str, eq: Optional[dict] = None):
     """Select rows with optional filters."""
     url = f"{SUPABASE_REST}/{table}"
@@ -129,13 +121,23 @@ def supabase_select(table: str, eq: Optional[dict] = None):
         raise HTTPException(status_code=500, detail=f"Supabase select error: {resp.text}")
     return resp.json()
 
+def supabase_insert(table: str, row: dict):
+    """Insert row into Supabase table."""
+    url = f"{SUPABASE_REST}/{table}"
+    resp = requests.post(url, headers=ADMIN_HEADERS, data=json.dumps(row))
+    if not resp.ok:
+        raise HTTPException(status_code=500, detail=f"Supabase insert error: {resp.text}")
+    return resp.json() if resp.text else {"ok": True}
+
+
 def supabase_update(table: str, id_col: str, id_val: str, payload: dict):
     """Update row in Supabase."""
     url = f"{SUPABASE_REST}/{table}?{id_col}=eq.{id_val}"
     resp = requests.patch(url, headers=ADMIN_HEADERS, data=json.dumps(payload))
     if not resp.ok:
         raise HTTPException(status_code=500, detail=f"Supabase update error: {resp.text}")
-    return resp.json()
+    return resp.json() if resp.text else {"ok": True}
+
 
 def supabase_delete(table: str, id_col: str, id_val: str):
     """Delete row in Supabase."""
@@ -143,7 +145,8 @@ def supabase_delete(table: str, id_col: str, id_val: str):
     resp = requests.delete(url, headers=ADMIN_HEADERS)
     if not resp.ok:
         raise HTTPException(status_code=500, detail=f"Supabase delete error: {resp.text}")
-    return resp.json()
+    return resp.json() if resp.text else {"ok": True}
+
 
 def create_supabase_user(email: str, password: Optional[str] = None, email_confirm: bool = True):
     """Create user in Supabase Auth (admin only)."""
