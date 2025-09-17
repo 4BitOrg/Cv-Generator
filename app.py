@@ -44,7 +44,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env")
 
 # Supabase endpoints
-SUPABASE_AUTH_ADMIN = f"{SUPABASE_URL}/auth/v1/admin"
+SUPABASE_AUTH_ADMIN = f"{SUPABASE_URL}/auth/v1/admin/users"
 SUPABASE_AUTH_USER = f"{SUPABASE_URL}/auth/v1/user"
 SUPABASE_REST = f"{SUPABASE_URL}/rest/v1"
 
