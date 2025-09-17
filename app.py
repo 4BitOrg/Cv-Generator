@@ -44,7 +44,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env")
 
 # Supabase endpoints
-SUPABASE_AUTH_ADMIN = f"{SUPABASE_URL}/auth/v1/admin/users"
+SUPABASE_AUTH_ADMIN = f"{SUPABASE_URL}/auth/v1/admin"
 SUPABASE_AUTH_USER = f"{SUPABASE_URL}/auth/v1/user"
 SUPABASE_REST = f"{SUPABASE_URL}/rest/v1"
 
@@ -203,15 +203,7 @@ def check_user_access(user_id: str):
     if last_tx.get("status") == "refunded":
         raise HTTPException(status_code=403, detail="Purchase refunded, access revoked")
 
-    recurrence = last_tx.get("recurrence")
-    purchased_at = last_tx.get("purchased_at")
-    if recurrence and purchased_at:
-        dt = datetime.fromisoformat(purchased_at.replace("Z", ""))
-        if recurrence == "monthly" and dt + timedelta(days=30) < datetime.utcnow():
-            raise HTTPException(status_code=403, detail="Subscription expired")
-        if recurrence == "yearly" and dt + timedelta(days=365) < datetime.utcnow():
-            raise HTTPException(status_code=403, detail="Subscription expired")
-
+    # subscription checks simplified (no recurrence column in schema)
     return True
 
 def require_user(authorization: Optional[str] = Header(None)):
@@ -239,7 +231,6 @@ async def gumroad_webhook(payload: dict):
     sale_id = payload.get("sale_id")
     product_id = payload.get("product_id")
     price_cents = payload.get("price", 0)
-    recurrence = payload.get("recurrence")
     refunded = payload.get("refunded", False)
 
     if not email or not sale_id:
@@ -264,10 +255,9 @@ async def gumroad_webhook(payload: dict):
     tx_row = {
         "user_id": user_id,
         "gumroad_tx_id": sale_id,
-        "amount": price_cents / 100.0,
+        "amount": float(price_cents) / 100.0,
         "currency": "USD",
         "status": "refunded" if refunded else "success",
-        "recurrence": recurrence,
         "purchased_at": datetime.utcnow().isoformat(),
     }
     supabase_insert("transactions", tx_row)
@@ -277,7 +267,7 @@ async def gumroad_webhook(payload: dict):
     except Exception as ex:
         print("Warning: welcome email failed:", ex)
 
-    return {"ok": True, "user_id": user_id, "subscription": recurrence}
+    return {"ok": True, "user_id": user_id}
 
 @app.post("/generate-cv")
 def generate_cv(
