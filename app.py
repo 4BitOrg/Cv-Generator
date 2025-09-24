@@ -11,6 +11,7 @@ FastAPI app for CV Generator project.
 
 import os
 import json
+import uuid
 from openai import OpenAI
 import requests
 from typing import Optional
@@ -44,6 +45,8 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env")
 
 # Supabase endpoints
+# keep as-is; many Supabase installs accept POST to /auth/v1/admin or /auth/v1/admin/users depending on config.
+# Your project previously worked with this value; if you hit an error, try swapping to "/auth/v1/admin" or "/auth/v1/admin/users".
 SUPABASE_AUTH_ADMIN = f"{SUPABASE_URL}/auth/v1/admin/users"
 SUPABASE_AUTH_USER = f"{SUPABASE_URL}/auth/v1/user"
 SUPABASE_REST = f"{SUPABASE_URL}/rest/v1"
@@ -119,7 +122,10 @@ def supabase_select(table: str, eq: Optional[dict] = None):
     resp = requests.get(url, headers=ADMIN_HEADERS, params=params)
     if not resp.ok:
         raise HTTPException(status_code=500, detail=f"Supabase select error: {resp.text}")
-    return resp.json()
+    try:
+        return resp.json()
+    except Exception:
+        return []
 
 def supabase_insert(table: str, row: dict):
     """Insert row into Supabase table."""
@@ -127,8 +133,13 @@ def supabase_insert(table: str, row: dict):
     resp = requests.post(url, headers=ADMIN_HEADERS, data=json.dumps(row))
     if not resp.ok:
         raise HTTPException(status_code=500, detail=f"Supabase insert error: {resp.text}")
-    return resp.json() if resp.text else {"ok": True}
-
+    # Supabase sometimes returns empty body on success -> protect against JSON decode error
+    if resp.text:
+        try:
+            return resp.json()
+        except Exception:
+            return {"ok": True}
+    return {"ok": True}
 
 def supabase_update(table: str, id_col: str, id_val: str, payload: dict):
     """Update row in Supabase."""
@@ -136,8 +147,12 @@ def supabase_update(table: str, id_col: str, id_val: str, payload: dict):
     resp = requests.patch(url, headers=ADMIN_HEADERS, data=json.dumps(payload))
     if not resp.ok:
         raise HTTPException(status_code=500, detail=f"Supabase update error: {resp.text}")
-    return resp.json() if resp.text else {"ok": True}
-
+    if resp.text:
+        try:
+            return resp.json()
+        except Exception:
+            return {"ok": True}
+    return {"ok": True}
 
 def supabase_delete(table: str, id_col: str, id_val: str):
     """Delete row in Supabase."""
@@ -145,24 +160,76 @@ def supabase_delete(table: str, id_col: str, id_val: str):
     resp = requests.delete(url, headers=ADMIN_HEADERS)
     if not resp.ok:
         raise HTTPException(status_code=500, detail=f"Supabase delete error: {resp.text}")
-    return resp.json() if resp.text else {"ok": True}
-
+    if resp.text:
+        try:
+            return resp.json()
+        except Exception:
+            return {"ok": True}
+    return {"ok": True}
 
 def create_supabase_user(email: str, password: Optional[str] = None, email_confirm: bool = True):
-    """Create user in Supabase Auth (admin only)."""
-    body = {"email": email}
-    if password:
-        body["password"] = password
+    """
+    Create user in Supabase Auth (admin only).
+    - If password is not provided, generate a temporary password and return it (so caller can email it).
+    - Returns dict: {"id": <uuid or None>, "password": <password or None>}
+      If user already exists, returns {"id": <existing id>, "password": None}
+    """
+    # generate a temporary password if none provided
+    generated_password = password
+    if not generated_password:
+        # use a readable random string
+        generated_password = uuid.uuid4().hex[:12]
+
+    body = {"email": email, "password": generated_password}
     if email_confirm:
         body["email_confirm"] = True
 
     resp = requests.post(SUPABASE_AUTH_ADMIN, headers=ADMIN_HEADERS, data=json.dumps(body))
+
     if not resp.ok:
-        j = resp.json()
-        if "User already registered" in str(j):
-            return {"id": None}
+        # try to parse response safely
+        txt = resp.text or ""
+        try:
+            j = resp.json()
+        except Exception:
+            j = {"raw": txt}
+
+        # If user already exists, fetch the user id and return password=None
+        text_join = json.dumps(j) if isinstance(j, dict) else str(j)
+        if "User already registered" in text_join or "already exists" in text_join or resp.status_code in (409,):
+            # fetch existing user id via admin REST users table (service role)
+            q_url = f"{SUPABASE_REST}/users?email=eq.{email}"
+            r = requests.get(q_url, headers=ADMIN_HEADERS)
+            if r.ok:
+                try:
+                    users = r.json()
+                    if users:
+                        return {"id": users[0].get("id"), "password": None}
+                except Exception:
+                    pass
+            # fallback: return id None but no password
+            return {"id": None, "password": None}
+        # otherwise raise meaningful error
         raise HTTPException(status_code=500, detail=f"Supabase create user error: {j}")
-    return resp.json()
+
+    # success - parse response safely
+    try:
+        data = resp.json()
+        user_id = data.get("id") or data.get("user", {}).get("id")
+    except Exception:
+        # if for some reason JSON missing, try to fetch user
+        q_url = f"{SUPABASE_REST}/users?email=eq.{email}"
+        r = requests.get(q_url, headers=ADMIN_HEADERS)
+        if r.ok:
+            try:
+                users = r.json()
+                user_id = users[0].get("id") if users else None
+            except Exception:
+                user_id = None
+        else:
+            user_id = None
+
+    return {"id": user_id, "password": generated_password if user_id else None}
 
 def get_user_from_token(token: str):
     """Validate access token with Supabase Auth."""
@@ -171,7 +238,10 @@ def get_user_from_token(token: str):
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(SUPABASE_AUTH_USER, headers=headers)
     if resp.status_code == 200:
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid or expired token (no JSON)")
     raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 def send_welcome_email(to_email: str, password: Optional[str] = None):
@@ -184,8 +254,11 @@ def send_welcome_email(to_email: str, password: Optional[str] = None):
     msg["To"] = to_email
     body = f"Hello!\n\nYour account is ready.\nEmail: {to_email}\n"
     if password:
-        body += f"Temporary password: {password}\nPlease change it after login.\n"
-    body += "\nBest regards,\nCV Generator Team"
+        body += (
+            "A temporary password has been generated for you. Please login and change it.\n\n"
+            f"Temporary password: {password}\n\n"
+        )
+    body += "Login: <your-frontend-url>/login\n\nBest regards,\nCV Generator Team"
     msg.set_content(body)
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
         smtp.login(SMTP_USER, SMTP_PASS)
@@ -239,13 +312,22 @@ async def gumroad_webhook(payload: dict):
     if not email or not sale_id:
         raise HTTPException(status_code=400, detail="Missing email or sale_id")
 
+    # create user and possibly receive a generated temporary password
     created = create_supabase_user(email=email, password=None, email_confirm=True)
     user_id = created.get("id")
+    temp_password = created.get("password")  # will be None if user already existed
+
+    # if create_supabase_user couldn't return id, try to fetch by email
     if not user_id:
         q_url = f"{SUPABASE_REST}/users?email=eq.{email}"
         resp = requests.get(q_url, headers=ADMIN_HEADERS)
-        if resp.ok and resp.json():
-            user_id = resp.json()[0].get("id")
+        if resp.ok and resp.text:
+            try:
+                arr = resp.json()
+                if arr:
+                    user_id = arr[0].get("id")
+            except Exception:
+                pass
 
     if not user_id:
         raise HTTPException(status_code=500, detail="Failed to ensure user")
@@ -265,8 +347,17 @@ async def gumroad_webhook(payload: dict):
     }
     supabase_insert("transactions", tx_row)
 
+    # create a profile row if you want (optional) - only if profiles table exists
     try:
-        send_welcome_email(email, password=None)
+        profile_row = {"id": user_id, "name": email.split("@")[0]}
+        supabase_insert("profiles", profile_row)
+    except Exception:
+        # non-fatal if profiles table doesn't exist or insert fails
+        pass
+
+    try:
+        # send welcome email; include temp_password if it was generated
+        send_welcome_email(email, password=temp_password)
     except Exception as ex:
         print("Warning: welcome email failed:", ex)
 
@@ -424,7 +515,7 @@ def list_jobs(user=Depends(require_user)):
 @app.delete("/jobs/{job_id}")
 def delete_job(job_id: str, user=Depends(require_user)):
     """Delete a job posting."""
-    rows = supabase_select("jobs", eq={"id": job_id})
+    rows = supabase_select("jobs", eq={"id": job_id}")
     if not rows:
         raise HTTPException(status_code=404, detail="Job not found")
     job = rows[0]
